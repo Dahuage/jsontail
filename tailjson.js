@@ -4,20 +4,19 @@
  *
  * tail - output the last lines of file(s). This wheel is
  * inspired by GNU tail and npm tail by <Luca Grulla>.
- * Yet more, imatate this for learning.
+ * Yet more, imatate this for learning JavaScript.
  * @author dahua<guzhaoer@gmail.com>
  **/
 
-const version = '0.0.1';
+const version = '1.0.1';
 
 const fs = require('fs');
 const events = require('events');
-const stream = require('stream');
 const commander = require('commander');
 const colors = require('colors');
 
 /**
- * Rarse options & argv.
+ * Global things.
  */
 const DEFAULT_LINES = '10';
 const EXIT_SUCCESS = 0;
@@ -25,6 +24,9 @@ const EXIT_FAILURE = 1;
 const BUFF_SIZE = 1024;
 const COPY_TO_EOF = Number.MAX_SAFE_INTEGER
 
+/**
+ * Rarse options & argv.
+ */
 const program = new commander.Command();
 program.version(version);
 program.option('-c,--count-bytes <number>', 'same as GUN tail');
@@ -59,15 +61,12 @@ if (!args.length && process.stdin.isTTY) {
     process.exit(EXIT_SUCCESS);
 };
 
-/**
- * Global things.
- */
 
 // Options related to forever
 const forever = options.forever || options.Forever;
 const follow_name = forever ? (options.Forever ? false : true) : false;
 const sleepInterval = options.sleepInterval || 0;
-const pid = options.pid || null;
+const pid = options.pid || -1;
 const maxUnchangedStats = options.maxUnchangedStats || 0;
 
 // Options relates to temp
@@ -92,25 +91,21 @@ if(!nUnit && !fromStart && !forever){
     process.exit(EXIT_SUCCESS);
 }
 
+class NonImplementError extends Error{
+
+    constructor(){
+        super();
+    }
+}
+
 /**
- * Tail's private method.
+ * Tail's private method. This is an approach to define a private
+ * method described by "God Ruan <http://es6.ruanyifeng.com/>"
+ * and this is unnecessary.
  */
 const _private_method_init_inputs = Symbol('initInputs');
 const _private_method_delivery = Symbol('delivery');
 const _private_method_input_end = Symbol('inputEnd');
-
-function parseJson(str){
-    try{
-        let obj = JSON.parse(str)
-        let ret = JSON.stringify(obj, null, "\t")
-        console.log(ret)
-    }catch(e){
-        console.log('------ERR PARSE------')
-        console.log(e)
-        console.log('------SOURCE------')
-        console.log(str)
-    }
-}
 
 class Tail {
 
@@ -134,7 +129,7 @@ class Tail {
     [_private_method_input_end](e, data){
         this.inputNum -= 1;
         if(this.inputNum === 0){
-            // process.exit;
+            process.exit(EXIT_SUCCESS);
         }
     }
 
@@ -214,7 +209,7 @@ class StreamReader extends events.EventEmitter{
     get header(){
         const name = this.name;
         const now = Date.now();
-        return `${name}-${now}`;
+        return `${name}-${now}\n`;
     }
 
     _build_read_proxy(){
@@ -227,11 +222,23 @@ class StreamReader extends events.EventEmitter{
 
         if(forever){
             this.watcher = new FileWatcher(self);
-            this.watcher.on('data', (d)=>{parseJson(d)});
+            this.watcher.on('data', (d)=>{this._dataFromReader(d)});
             this.watcher.on('eventB', ()=>{});
         }
-        this.proxy.on('eventA', ()=>{});
+        this.proxy.on('data', (d)=>{this._dataFromReader(d)});
         this.proxy.on('eventB', ()=>{});
+    }
+
+    _dataFromReader(data){
+        /** 
+         * TODO Acturally we need forard this data to 
+         * StreamWriter for a further process.
+        */
+        if(json){
+            Utils.parseJson(data);
+        }else{
+            console.log(data.toString());
+        }
     }
 
     tail(){
@@ -240,13 +247,6 @@ class StreamReader extends events.EventEmitter{
         if(forever){
             this.watcher.watch();
         }
-    }
-}
-
-class NonImplementError extends Error{
-
-    constructor(){
-        super();
     }
 }
 
@@ -282,7 +282,8 @@ class ReaderDelegateBase extends events.EventEmitter{
             }else{
                 remain -= readNum;
             }
-            this.internalDispatcher.emit('data', buffer.slice(0, readBytes))
+            // this.internalDispatcher.emit('data', buffer.slice(0, readBytes))
+            this.emit('data', buffer.slice(0, readBytes))
             this.curPosition += readBytes
         }
     }
@@ -292,9 +293,9 @@ class ByteReader extends ReaderDelegateBase{
 
     constructor(reader){
         super(reader);
-        this.internalDispatcher.on('data', (data)=>{
-            console.log(data.toString());
-        })
+        // this.internalDispatcher.on('data', (data)=>{
+        //     console.log(data.toString());
+        // })
     }
     tail(){
         if(fromStart){
@@ -314,9 +315,9 @@ class LineReader extends ReaderDelegateBase{
         super(reader);
         this.skipCounter = nUnit;
         this.dumpPosition = null;
-        this.internalDispatcher.on('data', (data)=>{
-            console.log(data.toString());
-        })
+        // this.internalDispatcher.on('data', (data)=>{
+        //     console.log(data.toString());
+        // })
     }
 
     /**
@@ -415,23 +416,19 @@ class LineReader extends ReaderDelegateBase{
 }
 
 
+
 class FileWatcher extends events.EventEmitter{
     constructor(reader){
         super();
         this.reader = reader
         this.filename = reader.filename;
-        this.separator = lineMode ? /[\r]{0,1}\n/ : null;
-        this.flushAtEOF = false;
-        this.encoding = 'utf-8';
-        this.fromBeginning = false;
-        this.fsWatchOptions = {};
+        this.lineBreaker = lineMode ? /[\r]{0,1}\n/ : null;
 
         this.internalDispatcher = new events.EventEmitter();
         this.queue = [];
         this.isWatching = false;
         this.pos = reader.initFileSize;
-
-        this.internalDispatcher.on('next', ()=>{
+        this.internalDispatcher.on('addition', ()=>{
             this.readBlock();
         })
     };
@@ -439,16 +436,14 @@ class FileWatcher extends events.EventEmitter{
     watch(){
         if(this.isWatching)return;
         this.isWatching = true;
-        this.watcher = fs.watch(this.filename, this.fsWatchOptions,
-                                (e, f)=>{this.watchEvent(e, f);})
-        
+        this.watcher = fs.watch(this.filename, {}, (e, f)=>{this.fileChange(e, f);}) 
     }
 
-    watchEvent(e, evtFilename){
+    fileChange(e, newFileName){
         if(e === 'change'){
             this.change();
         }else if (e === 'rename'){
-            let data = {'newName':evtFilename};
+            let data = {'newName': newFileName};
             this.internalDispatcher.emit('rename', data)
             this.emit('rename', data);
         }
@@ -459,14 +454,19 @@ class FileWatcher extends events.EventEmitter{
         try{
             stats = fs.statSync(this.filename);
         }catch(e){
-            throw Error(`Can't stat ${this.filename}`);
-        }
+            let header = this.reader.header;
+            console.log(header, `${e}`);
+            /**
+             * Log this and mark the corresponded file reader
+             * as non-tailable.
+             */
+        } 
         this.pos = stats.size <= this.pos ? stats.size : this.pos;
         if(stats.size > this.pos){
             this.queue.push({'start': this.pos, 'end':stats.size});
             this.pos = stats.size;
-            if(this.queue.length === 1){
-                this.internalDispatcher.emit('next');
+            if(this.queue.length > 0){
+                this.internalDispatcher.emit('addition');
             }
         }
     }
@@ -484,9 +484,9 @@ class FileWatcher extends events.EventEmitter{
         
                 stream.on('error', (error)=>{this.emit('error', error)});
                 stream.on('end', ()=>{
-                    let x = this.queue.shift();
+                    this.queue.shift();
                     if(this.queue.length > 0){
-                        this.internalDispatcher.emit('next');
+                        this.internalDispatcher.emit('addition');
                     }
                     if(this.flushAtEOF && this.buffer.length > 0){
                         this.emit('data', this.buffer);
@@ -494,11 +494,11 @@ class FileWatcher extends events.EventEmitter{
                     };
                 });
                 stream.on('data', (data)=>{
-                    if(this.separator === null){
+                    if(this.lineBreaker === null){
                         this.emit('data', data);
                     }else{
                         this.buffer += data;
-                        let parts = this.buffer.split(this.separator);
+                        let parts = this.buffer.split(this.lineBreaker);
                         this.buffer = parts.pop()
                         for(let part of parts){
                             this.emit('data', part);
@@ -512,6 +512,28 @@ class FileWatcher extends events.EventEmitter{
 
 
 class Utils{
+
+    static makeConf(config, options){
+        return Object.assign(config, options);
+    }
+    
+    /**
+     * This is argly. Try to implement the pretty
+     * print described in ./pp.js.
+     * @param {*} str a json string to be parsed.
+     */
+    static parseJson(str){
+        try{
+            let obj = JSON.parse(str)
+            let ret = JSON.stringify(obj, null, "\t")
+            console.log(ret)
+        }catch(e){
+            console.log('------ERR PARSE------')
+            console.log(e)
+            console.log('------SOURCE------')
+            console.log(str)
+        }
+    }
 
     static max(a, b, ...c){
         // Quick sort;
